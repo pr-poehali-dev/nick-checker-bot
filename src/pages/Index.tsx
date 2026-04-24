@@ -5,13 +5,24 @@ import {
   LogLevel, NickStatus, TabId,
   LogEntry, Character, ProxyEntry,
   LEVEL_PREFIX,
+  GALAXY_PROXY_URL,
+  parseRecoveryCode,
 } from "@/components/nicksniper/types";
 
 let logIdCounter = 1;
 
+async function galaxyRequest(body: Record<string, string>) {
+  const resp = await fetch(GALAXY_PROXY_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return resp.json();
+}
+
 export default function Index() {
   const [activeTab, setActiveTab] = useState<TabId>("checkers");
-  const [targetNick, setTargetNick] = useState("GalaxyKing");
+  const [targetNick, setTargetNick] = useState("");
   const [nickStatus, setNickStatus] = useState<NickStatus>("idle");
   const [isRunning, setIsRunning] = useState(false);
   const [intervalMs, setIntervalMs] = useState(200);
@@ -21,6 +32,7 @@ export default function Index() {
   const [notification, setNotification] = useState<{ text: string; type: LogLevel } | null>(null);
   const runIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const requestCountRef = useRef(0);
+  const isCapturingRef = useRef(false);
 
   const [checkers, setCheckers] = useState<Character[]>([
     { id: 1, recoveryCode: "", nickname: "Checker_1", status: "idle", lastChecked: "—", requestCount: 0, proxyIndex: 0 },
@@ -49,56 +61,125 @@ export default function Index() {
     setTimeout(() => setNotification(null), 3500);
   }, []);
 
-  const simulateCheck = useCallback(() => {
+  // Выбрать персонажа-прочека по очереди (round-robin)
+  const getCheckerCreds = useCallback((idx: number) => {
+    const activeCheckers = checkers.filter(c => c.recoveryCode.trim());
+    if (activeCheckers.length === 0) return null;
+    const checker = activeCheckers[idx % activeCheckers.length];
+    return parseRecoveryCode(checker.recoveryCode);
+  }, [checkers]);
+
+  // Выбрать прокси по очереди
+  const getProxy = useCallback((idx: number): string => {
+    const active = proxyList.filter(p => p.value.trim());
+    if (active.length === 0) return "";
+    return active[idx % active.length].value;
+  }, [proxyList]);
+
+  const doCheck = useCallback(async () => {
+    if (isCapturingRef.current) return;
+
+    const idx = requestCountRef.current;
     requestCountRef.current++;
     setTotalRequests(r => r + 1);
     const checkTime = nowTime();
 
-    setCheckers(prev => prev.map((c) => ({
-      ...c,
-      status: "checking" as const,
-      lastChecked: checkTime,
-    })));
+    // Обновляем статус чекеров визуально
+    setCheckers(prev => prev.map((c) => ({ ...c, status: "checking" as const, lastChecked: checkTime })));
 
-    const proxyAddr = proxyList[requestCountRef.current % Math.max(proxyList.length, 1)]?.value || "127.0.0.1:8080";
+    const creds = getCheckerCreds(idx);
+    if (!creds) {
+      setCheckers(prev => prev.map(c => ({ ...c, status: "idle" as const })));
+      return;
+    }
 
-    setTimeout(() => {
-      const isFree = Math.random() < 0.08;
-      const newStatus: NickStatus = isFree ? "free" : "busy";
-      setNickStatus(newStatus);
+    const proxy = getProxy(idx);
+
+    try {
+      const result = await galaxyRequest({
+        action: "check_nick",
+        nick: targetNick,
+        userID: creds.userID,
+        password: creds.password,
+        proxy,
+      });
+
       setCheckers(prev => prev.map(c => ({ ...c, status: "active" as const })));
 
+      if (!result.ok) {
+        addLog(`Ошибка прочека #${idx + 1}: ${result.error}`, "error");
+        setCheckers(prev => prev.map(c => ({ ...c, status: "error" as const })));
+        return;
+      }
+
+      const isFree: boolean = result.free === true;
+      setNickStatus(isFree ? "free" : "busy");
+
       if (isFree) {
+        isCapturingRef.current = true;
         addLog(`Ник "${targetNick}" СВОБОДЕН! Запускаю захват...`, "success");
         showNotification(`Ник "${targetNick}" свободен! Захват...`, "success");
         setCaptureAttempts(a => a + 1);
         setCheckers(prev => prev.map(c => ({ ...c, status: "idle" as const })));
 
+        // Останавливаем мониторинг
         if (runIntervalRef.current) {
           clearInterval(runIntervalRef.current);
           runIntervalRef.current = null;
           setIsRunning(false);
         }
 
-        setTimeout(() => {
-          const captured = Math.random() > 0.3;
-          if (captured) {
-            addLog(`Ник "${targetNick}" успешно занят основным персонажем!`, "success");
-            showNotification(`Ник "${targetNick}" захвачен!`, "success");
-          } else {
-            addLog(`Не удалось занять ник "${targetNick}" — опередили.`, "error");
-            showNotification(`Не удалось захватить — опередили.`, "error");
-          }
-        }, Math.random() * 300 + 50);
-      } else {
-        if (requestCountRef.current % 20 === 0) {
-          addLog(`[#${requestCountRef.current}] ${targetNick} — занят. Прокси: ${proxyAddr}`, "system");
+        // Захватываем ник основным персонажем
+        const mainCreds = parseRecoveryCode(mainChar.recoveryCode);
+        if (!mainCreds) {
+          addLog("Не удалось захватить: нет кредов основного персонажа", "error");
+          isCapturingRef.current = false;
+          return;
         }
-      }
-    }, Math.random() * 80 + 20);
-  }, [targetNick, proxyList, addLog, showNotification]);
 
-  const startMonitor = () => {
+        setMainChar(prev => ({ ...prev, status: "checking" as const, lastChecked: nowTime() }));
+        addLog(`Отправляю запрос на смену ника для "${mainChar.nickname}"...`, "info");
+
+        const captureResult = await galaxyRequest({
+          action: "change_nick",
+          new_nick: targetNick,
+          userID: mainCreds.userID,
+          password: mainCreds.password,
+          proxy: "",
+        });
+
+        setMainChar(prev => ({
+          ...prev,
+          status: captureResult.success ? "active" : "error",
+          lastChecked: nowTime(),
+          requestCount: prev.requestCount + 1,
+        }));
+
+        if (captureResult.ok && captureResult.success) {
+          addLog(`Ник "${targetNick}" успешно занят основным персонажем!`, "success");
+          showNotification(`Ник "${targetNick}" захвачен!`, "success");
+        } else {
+          addLog(`Не удалось занять ник "${targetNick}": ${captureResult.error || captureResult.raw || "неизвестная ошибка"}`, "error");
+          showNotification(`Не удалось захватить ник.`, "error");
+        }
+
+        isCapturingRef.current = false;
+      } else {
+        // Логируем каждые 20 запросов, чтобы не спамить
+        if ((idx + 1) % 20 === 0) {
+          addLog(`[#${idx + 1}] "${targetNick}" — занят. Прокси: ${proxy || "нет"}`, "system");
+        }
+        setCheckers(prev => prev.map(c => ({ ...c, status: "active" as const })));
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addLog(`Сетевая ошибка #${idx + 1}: ${msg}`, "error");
+      setCheckers(prev => prev.map(c => ({ ...c, status: "error" as const })));
+      setNickStatus("unknown");
+    }
+  }, [targetNick, getCheckerCreds, getProxy, mainChar, addLog, showNotification]);
+
+  const startMonitor = async () => {
     if (!targetNick.trim()) {
       showNotification("Введите целевой ник", "warn");
       return;
@@ -108,11 +189,56 @@ export default function Index() {
       addLog("Запуск отменён: не указан код восстановления основного персонажа", "warn");
       return;
     }
+
+    const mainCreds = parseRecoveryCode(mainChar.recoveryCode);
+    if (!mainCreds) {
+      showNotification("Неверный формат кода восстановления (нужен userID:password)", "warn");
+      addLog("Неверный формат кода восстановления основного персонажа. Используй формат: userID:password", "warn");
+      return;
+    }
+
+    const activeCheckers = checkers.filter(c => c.recoveryCode.trim());
+    if (activeCheckers.length === 0) {
+      showNotification("Добавьте хотя бы одного персонажа-прочека с кодом восстановления", "warn");
+      addLog("Запуск отменён: нет персонажей прочека с кодами восстановления", "warn");
+      return;
+    }
+
+    // Проверяем форматы кодов чекеров
+    for (const checker of activeCheckers) {
+      if (!parseRecoveryCode(checker.recoveryCode)) {
+        showNotification(`Неверный формат кода у ${checker.nickname}`, "warn");
+        addLog(`Неверный формат кода восстановления у "${checker.nickname}". Используй: userID:password`, "warn");
+        return;
+      }
+    }
+
+    // Проверяем авторизацию основного персонажа
+    addLog(`Проверка авторизации "${mainChar.nickname}"...`, "info");
+    try {
+      const authResult = await galaxyRequest({
+        action: "auth_check",
+        userID: mainCreds.userID,
+        password: mainCreds.password,
+      });
+      if (!authResult.ok || !authResult.valid) {
+        addLog(`Авторизация "${mainChar.nickname}" не прошла: ${authResult.error || authResult.raw || "неверные данные"}`, "error");
+        showNotification(`Авторизация основного персонажа не прошла`, "error");
+        return;
+      }
+      addLog(`Авторизация "${mainChar.nickname}" успешна`, "success");
+    } catch (err) {
+      addLog(`Ошибка проверки авторизации: ${err instanceof Error ? err.message : String(err)}`, "error");
+      return;
+    }
+
+    isCapturingRef.current = false;
+    requestCountRef.current = 0;
     addLog(`Запуск мониторинга ника "${targetNick}" | интервал: ${intervalMs}мс`, "system");
-    addLog(`Персонажи прочека: ${checkers.filter(c => c.recoveryCode).length} активных`, "info");
+    addLog(`Персонажей прочека: ${activeCheckers.length} | Прокси: ${proxyList.filter(p => p.value).length}`, "info");
     setIsRunning(true);
     setNickStatus("checking");
-    runIntervalRef.current = setInterval(simulateCheck, intervalMs);
+    runIntervalRef.current = setInterval(doCheck, intervalMs);
   };
 
   const stopMonitor = () => {
@@ -120,8 +246,10 @@ export default function Index() {
       clearInterval(runIntervalRef.current);
       runIntervalRef.current = null;
     }
+    isCapturingRef.current = false;
     setIsRunning(false);
     setNickStatus("idle");
+    setCheckers(prev => prev.map(c => ({ ...c, status: "idle" as const })));
     addLog("Мониторинг остановлен пользователем", "warn");
   };
 
@@ -131,12 +259,13 @@ export default function Index() {
     };
   }, []);
 
+  // Перезапускаем интервал при изменении intervalMs без потери состояния
   useEffect(() => {
     if (isRunning) {
       if (runIntervalRef.current) clearInterval(runIntervalRef.current);
-      runIntervalRef.current = setInterval(simulateCheck, intervalMs);
+      runIntervalRef.current = setInterval(doCheck, intervalMs);
     }
-  }, [intervalMs, isRunning, simulateCheck]);
+  }, [intervalMs, isRunning, doCheck]);
 
   const clearLogs = () => {
     setLogs([]);
