@@ -97,7 +97,7 @@ function CharacterCard({
             type="text"
             value={char.recoveryCode}
             onChange={e => onUpdate(char.id, { recoveryCode: e.target.value, authStatus: "unknown", userID: "", password: "" })}
-            placeholder="Код восстановления (из настроек Galaxy)..."
+            placeholder="userID:password — например 91534720:3a80714575..."
             className={`flex-1 bg-input border rounded-sm px-3 py-1.5 text-sm mono placeholder-zinc-700 outline-none transition-colors ${
               char.authStatus === "ok" ? "border-green-500/40 text-green-300" :
               char.authStatus === "fail" ? "border-red-500/40 text-red-300" :
@@ -266,7 +266,7 @@ export default function TabContent({
                       userID: "",
                       password: "",
                     }))}
-                    placeholder="Код из настроек Galaxy (Настройки → Код восстановления)..."
+                    placeholder="userID:password — например 91534720:3a80714575..."
                     className={`flex-1 bg-input border rounded-sm px-3 py-2 text-sm mono placeholder-zinc-700 outline-none transition-colors ${
                       mainChar.authStatus === "ok" ? "border-green-500/40 text-green-300" :
                       mainChar.authStatus === "fail" ? "border-red-500/30 text-red-300" :
@@ -294,13 +294,13 @@ export default function TabContent({
                   </button>
                 </div>
                 {!mainChar.recoveryCode && (
-                  <p className="text-xs text-red-400/70 mono mt-1">⚠ Требуется для захвата ника</p>
+                  <p className="text-xs text-zinc-600 mono mt-1">Формат: <span className="text-zinc-400">userID:password</span> — найди в Galaxy: Настройки → Профиль → Код восстановления</p>
                 )}
                 {mainChar.authStatus === "fail" && (
-                  <p className="text-xs text-red-400/70 mono mt-1">✕ Неверный код восстановления</p>
+                  <p className="text-xs text-red-400/70 mono mt-1">✕ Неверные данные. Убедись что формат: <span className="text-red-300">91534720:3a80714575600ffa...</span></p>
                 )}
                 {mainChar.authStatus === "ok" && (
-                  <p className="text-xs text-green-400/70 mono mt-1">✓ Вход выполнен успешно</p>
+                  <p className="text-xs text-green-400/70 mono mt-1">✓ Авторизован (ID: {mainChar.userID})</p>
                 )}
               </div>
               <div className="pt-2 border-t border-border">

@@ -57,60 +57,42 @@ def make_galaxy_url(user_id: str, password: str) -> str:
 
 def login_by_code(recovery_code: str, proxy_str: str = None) -> dict:
     """
-    Входит по коду восстановления Galaxy.
-    Код восстановления — строка вида XXXXX-XXXXX-XXXXX из настроек аккаунта.
-    Возвращает userID и password для последующих запросов.
+    Парсит код восстановления Galaxy (формат userID:password или userID password)
+    и проверяет авторизацию через pay_get_balance.
     """
-    proxies = parse_proxy(proxy_str)
-    login_headers = {**GALAXY_HEADERS}
-    login_headers["referer"] = "https://galaxy.mobstudio.ru/web/"
+    s = recovery_code.strip()
+    user_id, password = "", ""
 
-    url = (
-        f"https://galaxy.mobstudio.ru/services/"
-        f"?a=user_login_by_code&code={requests.utils.quote(recovery_code.strip())}"
-        f"&random={random.random()}&ajax=1"
-    )
+    # Формат: userID:password
+    if ":" in s:
+        idx = s.index(":")
+        user_id = s[:idx].strip()
+        password = s[idx + 1:].strip()
+    # Формат: userID password (через пробел)
+    elif " " in s:
+        parts = s.split(None, 1)
+        user_id = parts[0].strip()
+        password = parts[1].strip()
 
-    try:
-        resp = requests.get(url, headers=login_headers, proxies=proxies, timeout=10)
-        resp.raise_for_status()
-        text = resp.text.strip()
+    if not user_id or not password:
+        return {
+            "ok": False,
+            "error": "Неверный формат. Используй: userID:password (например 91534720:3a80714575600ffa06fb4a3c042b659d)"
+        }
+    if not user_id.isdigit():
+        return {
+            "ok": False,
+            "error": f"userID должен быть числом, получено: '{user_id}'"
+        }
 
-        # Ответ содержит userID и password через разделитель, либо JSON
-        # Пробуем парсить как JSON
-        try:
-            data = json.loads(text)
-            if isinstance(data, dict):
-                uid = str(data.get("userID") or data.get("user_id") or data.get("id") or "")
-                pwd = str(data.get("password") or data.get("pass") or "")
-                if uid and pwd:
-                    return {"ok": True, "userID": uid, "password": pwd, "raw": text}
-        except Exception:
-            pass
-
-        # Пробуем формат "userID:password" или "userID password"
-        if ":" in text:
-            parts = text.split(":", 1)
-            uid, pwd = parts[0].strip(), parts[1].strip()
-            if uid.isdigit() and pwd:
-                return {"ok": True, "userID": uid, "password": pwd, "raw": text}
-
-        if " " in text:
-            parts = text.split(None, 1)
-            if len(parts) == 2 and parts[0].strip().isdigit():
-                return {"ok": True, "userID": parts[0].strip(), "password": parts[1].strip(), "raw": text}
-
-        # Неизвестный формат — вернём raw для отладки
-        if text and "error" not in text.lower() and "false" not in text.lower():
-            return {"ok": False, "error": f"Неизвестный формат ответа: {text[:200]}", "raw": text}
-        return {"ok": False, "error": f"Код восстановления не принят: {text[:200]}", "raw": text}
-
-    except requests.exceptions.ProxyError as e:
-        return {"ok": False, "error": f"Ошибка прокси: {str(e)}"}
-    except requests.exceptions.Timeout:
-        return {"ok": False, "error": "Таймаут запроса"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    # Проверяем через auth_check
+    result = auth_check(user_id, password)
+    if result.get("ok") and result.get("valid"):
+        return {"ok": True, "userID": user_id, "password": password, "raw": result.get("raw", "")}
+    return {
+        "ok": False,
+        "error": result.get("error") or f"Неверные данные. Ответ сервера: {result.get('raw', '')[:200]}"
+    }
 
 
 def check_nick(nick: str, user_id: str, password: str, proxy_str: str = None) -> dict:
