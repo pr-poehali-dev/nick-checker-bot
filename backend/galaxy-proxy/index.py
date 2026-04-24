@@ -1,7 +1,7 @@
 """
 Прокси-функция для запросов к galaxy.mobstudio.ru.
 Обходит CORS и поддерживает ротацию прокси.
-Действия: check_nick, change_nick, auth
+Действия: login_by_code, check_nick, change_nick, auth_check
 """
 import json
 import random
@@ -53,6 +53,64 @@ def parse_proxy(proxy_str: str):
 def make_galaxy_url(user_id: str, password: str) -> str:
     query_rand = random.random()
     return f"https://galaxy.mobstudio.ru/services/?&userID={user_id}&password={password}&query_rand={query_rand}"
+
+
+def login_by_code(recovery_code: str, proxy_str: str = None) -> dict:
+    """
+    Входит по коду восстановления Galaxy.
+    Код восстановления — строка вида XXXXX-XXXXX-XXXXX из настроек аккаунта.
+    Возвращает userID и password для последующих запросов.
+    """
+    proxies = parse_proxy(proxy_str)
+    login_headers = {**GALAXY_HEADERS}
+    login_headers["referer"] = "https://galaxy.mobstudio.ru/web/"
+
+    url = (
+        f"https://galaxy.mobstudio.ru/services/"
+        f"?a=user_login_by_code&code={requests.utils.quote(recovery_code.strip())}"
+        f"&random={random.random()}&ajax=1"
+    )
+
+    try:
+        resp = requests.get(url, headers=login_headers, proxies=proxies, timeout=10)
+        resp.raise_for_status()
+        text = resp.text.strip()
+
+        # Ответ содержит userID и password через разделитель, либо JSON
+        # Пробуем парсить как JSON
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                uid = str(data.get("userID") or data.get("user_id") or data.get("id") or "")
+                pwd = str(data.get("password") or data.get("pass") or "")
+                if uid and pwd:
+                    return {"ok": True, "userID": uid, "password": pwd, "raw": text}
+        except Exception:
+            pass
+
+        # Пробуем формат "userID:password" или "userID password"
+        if ":" in text:
+            parts = text.split(":", 1)
+            uid, pwd = parts[0].strip(), parts[1].strip()
+            if uid.isdigit() and pwd:
+                return {"ok": True, "userID": uid, "password": pwd, "raw": text}
+
+        if " " in text:
+            parts = text.split(None, 1)
+            if len(parts) == 2 and parts[0].strip().isdigit():
+                return {"ok": True, "userID": parts[0].strip(), "password": parts[1].strip(), "raw": text}
+
+        # Неизвестный формат — вернём raw для отладки
+        if text and "error" not in text.lower() and "false" not in text.lower():
+            return {"ok": False, "error": f"Неизвестный формат ответа: {text[:200]}", "raw": text}
+        return {"ok": False, "error": f"Код восстановления не принят: {text[:200]}", "raw": text}
+
+    except requests.exceptions.ProxyError as e:
+        return {"ok": False, "error": f"Ошибка прокси: {str(e)}"}
+    except requests.exceptions.Timeout:
+        return {"ok": False, "error": "Таймаут запроса"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def check_nick(nick: str, user_id: str, password: str, proxy_str: str = None) -> dict:
@@ -163,7 +221,14 @@ def handler(event: dict, context) -> dict:
             "body": json.dumps({"ok": False, "error": "Не указан action"}),
         }
 
-    if action == "check_nick":
+    if action == "login_by_code":
+        recovery_code = body.get("recovery_code", "")
+        if not recovery_code:
+            result = {"ok": False, "error": "Не указан recovery_code"}
+        else:
+            result = login_by_code(recovery_code, proxy_str)
+
+    elif action == "check_nick":
         nick = body.get("nick", "")
         result = check_nick(nick, user_id, password, proxy_str)
 

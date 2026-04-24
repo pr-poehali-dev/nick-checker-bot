@@ -12,6 +12,9 @@ export interface LogEntry {
 export interface Character {
   id: number;
   recoveryCode: string;
+  userID: string;
+  password: string;
+  authStatus: "unknown" | "ok" | "fail" | "checking";
   nickname: string;
   status: "active" | "idle" | "error" | "checking";
   lastChecked: string;
@@ -59,21 +62,3 @@ export const TABS: { id: TabId; label: string; icon: string }[] = [
 ];
 
 export const GALAXY_PROXY_URL = "https://functions.poehali.dev/6c6e6654-a6af-419e-bb02-dc05d0258255";
-
-/**
- * Парсит код восстановления Galaxy.
- * Форматы: "userID:password" или "userID password" или просто "password" (без userID).
- */
-export function parseRecoveryCode(code: string): { userID: string; password: string } | null {
-  const s = code.trim();
-  if (!s) return null;
-  if (s.includes(":")) {
-    const idx = s.indexOf(":");
-    return { userID: s.slice(0, idx), password: s.slice(idx + 1) };
-  }
-  if (s.includes(" ")) {
-    const parts = s.split(/\s+/);
-    if (parts.length >= 2) return { userID: parts[0], password: parts[1] };
-  }
-  return null;
-}
