@@ -117,9 +117,14 @@ export default function Index() {
       setCheckers(prev => prev.map(c => ({ ...c, status: "active" as const })));
 
       if (!result.ok) {
-        addLog(`Ошибка прочека #${idx + 1}: ${result.error}`, "error");
+        addLog(`Ошибка прочека #${idx + 1}: ${result.error} | raw: ${result.raw ?? ""}`, "error");
         setCheckers(prev => prev.map(c => ({ ...c, status: "error" as const })));
         return;
+      }
+
+      // Логируем первые 5 запросов чтобы видеть реальный ответ Galaxy
+      if (idx < 5) {
+        addLog(`[диагностика #${idx + 1}] free=${result.free} raw=${JSON.stringify(result.raw)}`, "system");
       }
 
       const isFree: boolean = result.free === true;

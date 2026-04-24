@@ -113,7 +113,19 @@ def check_nick(nick: str, user_id: str, password: str, proxy_str: str = None) ->
         resp.raise_for_status()
         text = resp.text.strip()
 
-        # Ответ: пустая строка или пробелы = занят, непустой ник = свободен
+        # Пробуем распарсить JSON-ответ Galaxy ({"success":false} = ошибка авторизации)
+        try:
+            jdata = json.loads(text)
+            if isinstance(jdata, dict) and jdata.get("success") is False:
+                errors = jdata.get("errors", [])
+                err_msg = errors[0].get("message", "") if errors else "неизвестная ошибка"
+                return {"ok": False, "error": f"Galaxy: {err_msg}", "free": False, "raw": text}
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Текстовый ответ Galaxy на check_user_nick:
+        # - ник СВОБОДЕН  → сервер возвращает сам ник (непустую строку)
+        # - ник ЗАНЯТ     → сервер возвращает пустую строку или пробелы
         is_free = bool(text) and text.replace(" ", "") != ""
         return {"ok": True, "free": is_free, "raw": text}
     except requests.exceptions.ProxyError as e:
